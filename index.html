@@ -101,12 +101,13 @@ var APPARATUS=["Floor","Horse","Rings","Vault","P-bars","High bar"];
 function freshState(){return{athletes:[],skills:[],sets:[],
  settings:{missPenalty:2,perMinute:1,freeThreshold:5,defaultMade:5}};}
 var S=freshState();
-var _db=null,_uid=null,_rendered=false;
+var _db=null,_uid=null,_ref=null,_rendered=false;
 
 function _lsLoad(){try{var r=localStorage.getItem(KEY);if(r){var o=JSON.parse(r);
  o.athletes=o.athletes||[];o.skills=o.skills||[];o.sets=o.sets||[];
  o.settings=Object.assign(freshState().settings,o.settings||{});S=o;}}catch(e){}}
 
+function _normalize(o){o=o||{};o.athletes=o.athletes||[];o.skills=o.skills||[];o.sets=o.sets||[];o.settings=Object.assign(freshState().settings,o.settings||{});return o;}
 function _safeRender(){if(!_rendered){_rendered=true;render();}}
 
 /* Safety net: if Firebase doesn't resolve in 6 seconds, render with localStorage */
@@ -127,19 +128,30 @@ try{
  _db=firebase.firestore();
  firebase.auth().signInAnonymously().then(function(cred){
   _uid=cred.user.uid;
-  return _db.doc("users/"+_uid+"/data/"+KEY).get();
- }).then(function(doc){
-  if(doc.exists){
-   var o=doc.data();
-   o.athletes=o.athletes||[];o.skills=o.skills||[];o.sets=o.sets||[];
-   o.settings=Object.assign(freshState().settings,o.settings||{});S=o;
-  } else {
-   // one-time migration from localStorage on first cloud load
-   _lsLoad();if(S.athletes.length||S.sets.length)save();
-  }
-  _safeRender();
+  // Shared document so every device (phone + computer) reads/writes the SAME data.
+  // (Anonymous auth gives each device a different uid, so a per-uid path can never sync.)
+  _ref=_db.doc("shared/"+KEY);
+  var first=true;
+  // Real-time listener: pushes remote changes to this device live.
+  _ref.onSnapshot(function(doc){
+   if(doc.metadata.hasPendingWrites)return; // ignore echo of our own local write
+   if(doc.exists){
+    S=_normalize(doc.data());
+    try{localStorage.setItem(KEY,JSON.stringify(S));}catch(e){}
+    if(first){first=false;_safeRender();}
+    else if(!document.querySelector(".modal-bg")&&view.name!=="live"){render();}
+   }else{
+    // first cloud load: migrate whatever is on this device, then push it up
+    _lsLoad();
+    if(S.athletes.length||S.skills.length||S.sets.length)save();
+    first=false;_safeRender();
+   }
+  },function(e){
+   console.error("Firestore listen error, using localStorage:",e);
+   _lsLoad();_safeRender();
+  });
  }).catch(function(e){
-  console.error("Firebase auth/db error, using localStorage:",e);
+  console.error("Firebase auth error, using localStorage:",e);
   _lsLoad();_safeRender();
  });
 }catch(e){
@@ -148,8 +160,8 @@ try{
 }
 
 function save(){
- if(_db&&_uid){_db.doc("users/"+_uid+"/data/"+KEY).set(JSON.parse(JSON.stringify(S)));}
  try{localStorage.setItem(KEY,JSON.stringify(S));}catch(e){}
+ if(_ref){_ref.set(JSON.parse(JSON.stringify(S))).catch(function(e){console.error("Cloud save failed:",e);});}
 }
 function uid(){return Date.now().toString(36)+Math.random().toString(36).slice(2,7);}
 
